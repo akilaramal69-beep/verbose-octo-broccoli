@@ -3,11 +3,11 @@ services:
     build: .
     restart: always
     environment:
+      - PYTHONUNBUFFERED=1
       - HELIUS_API_KEY=${HELIUS_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - WALLET_PRIVATE_KEY=${WALLET_PRIVATE_KEY}
       - RPC_URL=${RPC_URL:-https://mainnet.helius-rpc.com}
       - WSS_URL=${WSS_URL:-wss://mainnet.helius-rpc.com}
-    ports:
-      - "8000:8000"
+      - SIMULATION_MODE=${SIMULATION_MODE:-false}

@@ -1,143 +1,145 @@
-# Pump.fun Solana Sniper Bot
+# 🚀 Pump.fun Solana Sniper Bot
 
-High-speed algorithmic trading bot for Pump.fun tokens with Dev Trust scoring, deployed on Koyeb free tier.
+High-speed algorithmic trading bot for new token launches on [Pump.fun](https://pump.fun). Detects tokens in real-time via Helius WebSocket, scores them with a Dev Trust engine, and executes trades using Jito MEV bundles.
 
 ## Features
 
-- **Real-time Detection** - Subscribes to Helius WebSocket for instant new token alerts
-- **Dev Trust Scoring** - Filters honeypots and pump-and-dump tokens
-- **Lightning Fast Execution** - Dynamic priority fees + Jito bundles
-- **Smart Exits** - 2-Step profit taking with trailing stop-loss
-- **Telegram Alerts** - Live notifications for every action
+- **Real-time Detection** — Subscribes to Helius WebSocket (`logsSubscribe`) for instant new token alerts
+- **Dev Trust Scoring** — Filters honeypots and pump-and-dump tokens before buying
+- **Jito Bundles** — Dynamic priority fees + MEV-protected transaction submission
+- **Smart Exit Strategy** — Sell 50% at +50% profit, trailing stop-loss on the rest
+- **Simulation Mode** — Full paper trading using real token data, zero real funds
+- **Telegram Alerts** — Live notifications and commands via bot
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    TELEGRAM BOT                         │
-│  /start | Alerts | Trade History                       │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────┐
-│                     MAIN (Orchestrator)                 │
-│  - Coordinates all components                          │
-│  - Handles signals (graceful shutdown)                  │
-└───────┬─────────────────────┬─────────────────────────┘
-        │                     │
-┌───────▼───────┐     ┌───────▼───────┐
-│   SCANNER     │     │    TRADE      │
-│  WebSocket    │     │   EXECUTOR    │
-│  - Log Sub    │     │  - Jito       │
-│  - Parse TX   │     │  - Fees       │
-└───────┬───────┘     └───────┬───────┘
-        │                     │
-┌───────▼─────────────────────▼───────┐
-│              ALGO                    │
-│  Scoring Engine                      │
-│  - Mint Auth Check                   │
-│  - Dev Buy %                         │
-│  - Creator History                   │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│               TELEGRAM BOT                  │
+│  /start | /status | /simulate | /trades     │
+└──────────────────┬──────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────┐
+│               MAIN (Orchestrator)           │
+│  Health-check HTTP server (port 8000)       │
+└────────┬──────────────────┬─────────────────┘
+         │                  │
+┌────────▼───────┐  ┌───────▼───────┐
+│   SCANNER      │  │    TRADE      │
+│  Helius WS     │  │   EXECUTOR    │
+│  logsSubscribe │  │  Jito / Sim   │
+└────────┬───────┘  └───────┬───────┘
+         │                  │
+┌────────▼──────────────────▼───────┐
+│              ALGO                  │
+│  • Mint Authority check            │
+│  • Dev Buy % check                 │
+│  • Creator history (coins/hour)    │
+└────────────────────────────────────┘
 ```
-
-## Configuration
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `HELIUS_API_KEY` | Helius RPC API key | Required |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token | Required |
-| `TELEGRAM_CHAT_ID` | Your chat ID | Required |
-| `WALLET_PRIVATE_KEY` | Base58 private key | Required |
-| `TRADE_AMOUNT_SOL` | Amount per trade | 0.065 |
-| `RPC_URL` | Custom RPC | Helius mainnet |
-| `WSS_URL` | Custom WebSocket | Helius mainnet |
 
 ## Scoring Logic
 
-| Check | Condition | Action |
-|-------|-----------|--------|
-| Mint Authority | `present` | **Score = 0** (Honeypot) |
-| Dev Buy % | `> 15%` | **Score -= 50** (High Risk) |
-| Creator History | `> 3 coins/hour` | **Score = 0** (Dumper) |
+| Check | Condition | Result |
+|---|---|---|
+| Mint Authority | Present | **Score = 0** (Honeypot) |
+| Dev Buy % | > 15% | **Score -= 50** (High Risk) |
+| Creator History | > 3 coins/hour | **Score = 0** (Dumper) |
+
+Only tokens with **score > 0** are traded.
 
 ## Exit Strategy
 
 ```
 Step 1: Sell 50% at +50% profit
-Step 2: Sell remaining 50% at -20% trailing stop
+Step 2: Sell remaining 50% when price drops -20% from peak (trailing stop)
 ```
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `HELIUS_API_KEY` | ✅ Always | Helius RPC/WebSocket API key |
+| `TELEGRAM_BOT_TOKEN` | ✅ | Telegram bot token from @BotFather |
+| `TELEGRAM_CHAT_ID` | ✅ | Your Telegram chat/user ID |
+| `WALLET_PRIVATE_KEY` | Live only | Solana wallet private key (Base58) |
+| `SIMULATION_MODE` | ❌ | Set `true` for paper trading (default: false) |
+| `TRADE_AMOUNT_SOL` | ❌ | SOL per trade (default: 0.065) |
+| `RPC_URL` | ❌ | Custom RPC endpoint |
+| `WSS_URL` | ❌ | Custom WebSocket endpoint |
+
+> **Note:** In simulation mode `WALLET_PRIVATE_KEY` is not required. The bot uses the real Helius WebSocket to detect and score real tokens — only trade execution is simulated.
 
 ## Installation
 
 ```bash
-# Clone repository
+# 1. Clone
 git clone https://github.com/your-username/pump-sniper.git
 cd pump-sniper
 
-# Install dependencies
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# Configure environment
+# 3. Configure
 cp .env.example .env
-nano .env  # Add your keys
+# Edit .env and fill in your keys
 
-# Run locally
-python main.py
+# 4. Run (simulation mode recommended first)
+SIMULATION_MODE=true python main.py
 ```
+
+## Testing the Scoring Logic
+
+You can manually test how the bot "thinks" by scoring any existing token:
+
+```bash
+python test_score.py <MINT_ADDRESS> <CREATOR_ADDRESS>
+```
+
+This will perform the same checks (Mint Authority, Dev Balance, Creator History) that the bot uses during live scanning and print a detailed risk report.
 
 ## Docker
 
 ```bash
-# Build
-docker build -t pump-sniper .
+# Build and run
+docker compose up -d
 
-# Run
-docker run -d \
-  --env-file .env \
-  --name sniper \
-  pump-sniper
+# View logs
+docker compose logs -f
 ```
 
 ## Koyeb Deployment
 
-1. Fork this repository to GitHub
-2. Go to [app.koyeb.com](https://app.koyeb.com)
-3. Click "Create App" → "GitHub"
-4. Select your repo and branch
-5. Add environment variables:
+1. Push this repo to GitHub
+2. Go to [app.koyeb.com](https://app.koyeb.com) → **Create App** → **GitHub**
+3. Select your repo, branch `main`
+4. Set environment variables in the Koyeb dashboard:
    - `HELIUS_API_KEY`
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
    - `WALLET_PRIVATE_KEY`
-6. Deploy (free tier: 0.1 vCPU, 512MB RAM)
+   - `PYTHONUNBUFFERED=1`
+5. Deploy — free tier (0.1 vCPU, 512 MB RAM) is sufficient
 
 ## Telegram Commands
 
 | Command | Description |
-|---------|-------------|
-| `/start` | Show bot stats and balance |
-| `/status` | Check bot health |
+|---|---|
+| `/start` | Show balance, stats, and win rate |
+| `/status` | Bot health and connection status |
+| `/simulate` | Toggle simulation mode on/off |
 | `/trades` | View trade history |
-
-## Telegram Alerts
-
-```
-🚀 NEW SNIPE: 7x9K...f3p | Score: 85/100 | Dev: 2% | Status: BUYING...
-💰 PROFIT TAKEN: +25% | $12.50 Realized
-❌ TRADE FAILED: Transaction rejected
-```
 
 ## File Structure
 
 ```
-pump-sniper/
-├── config.py       # All configuration
-├── scanner.py      # Helius WebSocket subscription
-├── algo.py         # Dev Trust scoring engine
-├── trade.py        # Buy/sell execution
-├── bot.py          # Telegram interface
-├── wallet.py       # Key management
-├── main.py         # Entry point
+├── main.py          # Orchestrator + HTTP health server
+├── config.py        # All settings (env-variable driven)
+├── scanner.py       # Helius WebSocket token detection
+├── algo.py          # Dev Trust scoring engine
+├── trade.py         # Buy/sell execution + simulation
+├── bot.py           # Telegram alerts and commands
+├── wallet.py        # Solana keypair management
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
@@ -147,22 +149,14 @@ pump-sniper/
 
 ## Dependencies
 
-- `solana>=0.30.0` - Solana SDK
-- `solders>=0.18.0` - Solana primitives
-- `aiohttp>=3.9.0` - Async HTTP/WS
-- `pysocks>=1.7.1` - DNS fallback (optional)
+- `solana` / `solders` — Solana Python SDK
+- `aiohttp` — Async WebSocket + HTTP
+- `asyncpg` — Async database (optional future use)
 
-## Safety Features
+## ⚠️ Disclaimer
 
-- **Stablecoin Shield** - USDC/USDT whitelisted, no swaps
-- **DNS Resolver** - Fallback to 1.1.1.1 for Jupiter API
-- **Circuit Breaker** - Rejects tokens with bad scores
-- **Confirmation Tracking** - Waits for finality before proceeding
-
-## Disclaimer
-
-This software is for educational purposes. Trading cryptocurrencies involves significant risk. The authors are not responsible for any financial losses.
+This bot trades real cryptocurrency. Use at your own risk. Always test in **simulation mode** first. The authors are not responsible for financial losses. Crypto trading involves significant risk of loss.
 
 ## License
 
-MIT License
+MIT
