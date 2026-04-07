@@ -158,9 +158,14 @@ class Scanner:
         
     async def process_logs(self):
         log_counter = 0
+        raw_counter = 0
         while self.running:
             try:
                 msg = await self.ws.receive()
+                raw_counter += 1
+                
+                if raw_counter % 50 == 0:
+                    logger.info(f"[SCANNER] Received {raw_counter} raw messages, {log_counter} processed")
                 
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = msg.json()
@@ -173,24 +178,19 @@ class Scanner:
                             
                             if logs and signature:
                                 log_counter += 1
-                                if log_counter % 100 == 0:
-                                    logger.info(f"Scanned {log_counter} log batches")
                                 
                                 for log in logs:
-                                    if "PrpFmsY" in log or "Create" in log:
-                                        logger.info(f"Found potential token in tx: {signature[:20]}...")
-                                        logger.info(f"Log: {log[:100]}")
-                                    
-                                    if "Program logged:" in log:
-                                        pass
-                                    elif "Program 6EF8" in log:
-                                        logger.info(f"Pump.fun activity: {log[:80]}")
+                                    if "Program 6EF8" in log:
+                                        logger.info(f"Pump.fun activity: {log[:100]}")
+                                    elif "Create" in log:
+                                        logger.info(f"Create log: {log[:100]}")
+                                    elif "mint" in log.lower():
+                                        logger.info(f"Mint log: {log[:100]}")
                                         
-                                    if "Create" in log and "mint" in log.lower():
-                                        if signature:
-                                            token_info = await self._extract_from_transaction(signature)
-                                            if token_info:
-                                                await self._handle_new_token(token_info)
+                                    if signature:
+                                        token_info = await self._extract_from_transaction(signature)
+                                        if token_info:
+                                            await self._handle_new_token(token_info)
                                             
             except asyncio.CancelledError:
                 break
