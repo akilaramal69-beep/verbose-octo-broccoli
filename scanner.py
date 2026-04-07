@@ -7,6 +7,7 @@ Uses Helius WebSocket for high-speed log subscription
 import asyncio
 import base64
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 import aiohttp
@@ -208,9 +209,16 @@ class Scanner:
         return None
         
     async def process_logs(self):
+        msg_count = 0
+        last_heartbeat = time.time()
         while self.running:
             try:
                 msg = await self.ws.receive()
+                msg_count += 1
+                
+                if time.time() - last_heartbeat > 60:
+                    logger.info(f"[SCANNER] Alive - processed {msg_count} messages in last minute")
+                    last_heartbeat = time.time()
                 
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = msg.json()
@@ -253,28 +261,38 @@ class Scanner:
         creator = token_info["creator"]
         
         if mint in self.scanned_tokens:
+            logger.info(f"Token already scanned: {mint[:20]}")
             return None
             
-        logger.info(f"New token detected: {mint}")
+        logger.info(f"Scoring token: {mint[:20]}...")
         
-        pump_token = PumpToken(
-            mint=mint,
-            creator=creator,
-            bonding_curve=token_info.get("bonding_curve", ""),
-            timestamp=asyncio.get_event_loop().time()
-        )
-        
-        score_result = await self.algo.score_token(pump_token)
-        
-        pump_token.score = score_result["score"]
-        pump_token.risk_factors = score_result["risk_factors"]
-        pump_token.has_mint_authority = score_result["has_mint_authority"]
-        pump_token.dev_holding_pct = score_result["dev_holding_pct"]
-        
-        self.scanned_tokens[mint] = pump_token
-        
-        if pump_token.score > 0:
-            return pump_token
+        try:
+            pump_token = PumpToken(
+                mint=mint,
+                creator=creator,
+                bonding_curve=token_info.get("bonding_curve", ""),
+                timestamp=time.time()
+            )
+            
+            logger.info(f"Calling algo.score_token for {mint[:20]}...")
+            score_result = await self.algo.score_token(pump_token)
+            logger.info(f"Score result: {score_result}")
+            
+            pump_token.score = score_result["score"]
+            pump_token.risk_factors = score_result["risk_factors"]
+            pump_token.has_mint_authority = score_result["has_mint_authority"]
+            pump_token.dev_holding_pct = score_result["dev_holding_pct"]
+            
+            self.scanned_tokens[mint] = pump_token
+            
+            if pump_token.score > 0:
+                logger.info(f"Token PASSED scoring: {mint[:20]} Score: {pump_token.score}")
+                return pump_token
+            else:
+                logger.info(f"Token FAILED scoring: {mint[:20]} - {pump_token.risk_factors}")
+                
+        except Exception as e:
+            logger.error(f"Error scoring token: {e}")
             
         return None
         
