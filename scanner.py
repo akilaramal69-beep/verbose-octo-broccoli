@@ -118,7 +118,7 @@ class Scanner:
                 "method": "getTransaction",
                 "params": [
                     signature,
-                    {"encoding": "base64", "maxSupportedTransactionVersion": 0}
+                    {"encoding": "jsonParsed"}
                 ]
             }) as resp:
                 data = await resp.json()
@@ -127,75 +127,69 @@ class Scanner:
                     message = tx.get("transaction", {}).get("message", {})
                     
                     instructions = message.get("instructions", [])
+                    accounts = message.get("accountKeys", [])
+                    
                     for ix in instructions:
-                        if ix.get("programId") == config.PUMP_FUN_PROGRAM:
-                            parsed = await self._parse_ix_data(ix)
-                            if parsed:
-                                return parsed
+                        program_id_idx = ix.get("programIdIndex")
+                        if program_id_idx is not None and program_id_idx < len(accounts):
+                            program_id = accounts[program_id_idx]
+                            
+                            if "6EF8" in str(program_id):
+                                parsed = await self._parse_ix_data(ix, accounts)
+                                if parsed:
+                                    return parsed
+                                    
         except Exception as e:
             logger.error(f"Failed to extract tx data: {e}")
         return None
         
-    async def _parse_ix_data(self, ix: Dict) -> Optional[Dict[str, Any]]:
+    async def _parse_ix_data(self, ix: Dict, account_keys: list) -> Optional[Dict[str, Any]]:
         try:
-            data_b64 = ix.get("data", "")
-            data_bytes = base64.b64decode(data_b64)
+            data = ix.get("data", {})
+            parsed = data.get("parsed", {}) if isinstance(data, dict) else {}
+            ix_type = parsed.get("type", "")
             
-            if data_bytes[:8] == config.PUMP_FUN_CREATE_PREFIX:
-                accounts = ix.get("accounts", [])
-                if len(accounts) >= 2:
-                    mint = accounts[0]
-                    creator = accounts[1]
-                    
+            if ix_type == "create" or ix_type == "initialize":
+                info = parsed.get("info", {})
+                mint = info.get("mint")
+                creator = info.get("authority")
+                
+                if mint and creator:
                     return {
                         "mint": mint,
                         "creator": creator,
-                        "bonding_curve": accounts[2] if len(accounts) > 2 else None
+                        "bonding_curve": None
                     }
         except Exception as e:
             logger.debug(f"Ix parse error: {e}")
         return None
         
     async def process_logs(self):
-        log_counter = 0
-        raw_counter = 0
-        debug_sample = 0
         while self.running:
             try:
                 msg = await self.ws.receive()
-                raw_counter += 1
                 
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = msg.json()
-                    debug_sample += 1
-                    
-                    if debug_sample == 1:
-                        logger.info(f"[DEBUG] First message structure: {str(data)[:500]}")
                     
                     if "params" in data and "result" in data["params"]:
                         result_value = data["params"]["result"]
-                        if isinstance(result_value, dict):
-                            result_keys = list(result_value.keys())
-                            logger.info(f"[DEBUG] Result keys: {result_keys}")
-                            
-                            if "value" in result_value:
-                                value_data = result_value["value"]
-                                if isinstance(value_data, dict):
-                                    value_keys = list(value_data.keys())
-                                    logger.info(f"[DEBUG] Value keys: {value_keys}")
-                                    logs = value_data.get("logs", [])
-                                    signature = result_value.get("signature", "")
-                                    
-                                    if logs and signature:
-                                        log_counter += 1
-                                        
-                                        for log in logs:
-                                            if "6EF8" in log:
-                                                logger.info(f"Pump.fun: {log[:100]}")
-                                                
-                                        token_info = await self._extract_from_transaction(signature)
-                                        if token_info:
-                                            await self._handle_new_token(token_info)
+                        if isinstance(result_value, dict) and "value" in result_value:
+                            value_data = result_value["value"]
+                            if isinstance(value_data, dict):
+                                logs = value_data.get("logs", [])
+                                signature = value_data.get("signature", "")
+                                
+                                if logs and signature:
+                                    for log in logs:
+                                        if "6EF8" in log:
+                                            logger.info(f"Pump.fun: {log[:80]}")
+                                        elif "Create" in log and "mint" in log.lower():
+                                            logger.info(f"Potential token create: {log[:80]}")
+                                            
+                                    token_info = await self._extract_from_transaction(signature)
+                                    if token_info:
+                                        await self._handle_new_token(token_info)
                                             
             except asyncio.CancelledError:
                 break
