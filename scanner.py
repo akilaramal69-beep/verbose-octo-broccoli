@@ -245,7 +245,8 @@ class Scanner:
         creator = token_info["creator"]
         
         if mint in self.scanned_tokens:
-            logger.info(f"Token already scanned: {mint[:20]}")
+            existing = self.scanned_tokens[mint]
+            logger.info(f"Token already scanned: {mint[:20]} Score:{existing.score} Factors:{existing.risk_factors}")
             return None
             
         logger.info(f"Scoring token: {mint[:20]}...")
