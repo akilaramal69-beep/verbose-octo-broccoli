@@ -59,6 +59,9 @@ class Scanner:
             }
         }
         await self.ws.send_json(subscribe_msg)
+        
+        response = await self.ws.receive_json()
+        logger.info(f"Sub response: {response}")
         logger.info("WebSocket connected to Helius logsSubscribe")
         
     async def _heartbeat(self):
@@ -152,6 +155,7 @@ class Scanner:
         return None
         
     async def process_logs(self):
+        log_counter = 0
         while self.running:
             try:
                 msg = await self.ws.receive()
@@ -165,18 +169,32 @@ class Scanner:
                             logs = result_value.get("value", {}).get("logs", [])
                             signature = result_value.get("signature", "")
                             
-                            for log in logs:
-                                if "Program log: PrpFmsY" in log:
-                                    if signature:
-                                        token_info = await self._extract_from_transaction(signature)
-                                        if token_info:
-                                            await self._handle_new_token(token_info)
+                            if logs and signature:
+                                log_counter += 1
+                                if log_counter % 100 == 0:
+                                    logger.info(f"Scanned {log_counter} log batches")
+                                
+                                for log in logs:
+                                    if "PrpFmsY" in log or "Create" in log:
+                                        logger.info(f"Found potential token in tx: {signature[:20]}...")
+                                        logger.info(f"Log: {log[:100]}")
+                                    
+                                    if "Program logged:" in log:
+                                        pass
+                                    elif "Program 6EF8" in log:
+                                        logger.info(f"Pump.fun activity: {log[:80]}")
+                                        
+                                    if "Create" in log and "mint" in log.lower():
+                                        if signature:
+                                            token_info = await self._extract_from_transaction(signature)
+                                            if token_info:
+                                                await self._handle_new_token(token_info)
                                             
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug(f"Log processing: {type(e).__name__}")
-                await asyncio.sleep(0.1)
+                logger.error(f"Log processing error: {e}")
+                await asyncio.sleep(1)
                 
     async def _handle_new_token(self, token_info):
         mint = token_info["mint"]
