@@ -3,22 +3,16 @@ regions:
   - nyc
 instances:
   type: free
-  count: 1
 services:
   - name: sniper-bot
     github:
       repository: your-username/your-repo
       branch: main
-      deploy_on_push: true
     run:
       command: python main.py
+      port: 8000
     env:
       - HELIUS_API_KEY=${HELIUS_API_KEY}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - WALLET_PRIVATE_KEY=${WALLET_PRIVATE_KEY}
-    health_checks:
-      path: /
-      interval: 10
-      timeout: 5
-      grace_period: 10

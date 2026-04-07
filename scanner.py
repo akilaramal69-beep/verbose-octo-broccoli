@@ -156,26 +156,27 @@ class Scanner:
             try:
                 msg = await self.ws.receive()
                 
-                if msg.type == aiohttp.WSMsgType.JSON:
+                if msg.type == aiohttp.WSMsgType.TEXT:
                     data = msg.json()
                     
                     if "params" in data and "result" in data["params"]:
-                        logs = data["params"]["result"].get("value", {}).get("logs", [])
-                        
-                        for log in logs:
-                            if "Program log: PrpFmsY" in log:
-                                signature = data["params"]["result"].get("signature", "")
-                                
-                                if signature:
-                                    token_info = await self._extract_from_transaction(signature)
-                                    if token_info:
-                                        await self._handle_new_token(token_info)
-                                        
+                        result_value = data["params"]["result"]
+                        if isinstance(result_value, dict):
+                            logs = result_value.get("value", {}).get("logs", [])
+                            signature = result_value.get("signature", "")
+                            
+                            for log in logs:
+                                if "Program log: PrpFmsY" in log:
+                                    if signature:
+                                        token_info = await self._extract_from_transaction(signature)
+                                        if token_info:
+                                            await self._handle_new_token(token_info)
+                                            
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Log processing error: {e}")
-                await asyncio.sleep(1)
+                logger.debug(f"Log processing: {type(e).__name__}")
+                await asyncio.sleep(0.1)
                 
     async def _handle_new_token(self, token_info):
         mint = token_info["mint"]
