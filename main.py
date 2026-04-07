@@ -56,6 +56,7 @@ class SniperBot:
         )
         
         await self.scanner.start()
+        self.scanner.token_callback = self.handle_token
         
         asyncio.create_task(self._scanner_loop())
         asyncio.create_task(self._status_reporter())

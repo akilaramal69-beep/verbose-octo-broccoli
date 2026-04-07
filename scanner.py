@@ -32,12 +32,13 @@ class PumpToken:
         self.risk_factors = risk_factors or []
 
 class Scanner:
-    def __init__(self, algo_module):
+    def __init__(self, algo_module, callback=None):
         self.algo = algo_module
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.session: Optional[aiohttp.ClientSession] = None
         self.running = False
         self.scanned_tokens: Dict[str, PumpToken] = {}
+        self.token_callback = callback
         
     async def start(self):
         await self._connect_websocket()
@@ -287,6 +288,10 @@ class Scanner:
             
             if pump_token.score > 0:
                 logger.info(f"Token PASSED scoring: {mint[:20]} Score: {pump_token.score}")
+                
+                if self.token_callback:
+                    asyncio.create_task(self.token_callback(pump_token))
+                    
                 return pump_token
             else:
                 logger.info(f"Token FAILED scoring: {mint[:20]} - {pump_token.risk_factors}")
