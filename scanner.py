@@ -55,7 +55,9 @@ class Scanner:
             "id": 1,
             "method": "logsSubscribe",
             "params": {
-                "mentions": [config.PUMP_FUN_PROGRAM]
+                "filter": {
+                    "mentions": [config.PUMP_FUN_PROGRAM]
+                }
             }
         }
         await self.ws.send_json(subscribe_msg)
