@@ -126,55 +126,45 @@ class Scanner:
                 data = await resp.json()
                 if "result" in data and data["result"]:
                     tx = data["result"]
-                    meta = tx.get("meta", {})
-                    logs = meta.get("logMessages", []) or logs_hint or []
                     message = tx.get("transaction", {}).get("message", {})
                     
-                    accounts = message.get("accountKeys", [])
-                    if not accounts:
-                        accounts = tx.get("transaction", {}).get("message", {}).get("accountKeys", [])
+                    accounts = []
+                    account_keys = message.get("accountKeys", [])
+                    for ak in account_keys:
+                        if isinstance(ak, dict):
+                            accounts.append(ak.get("pubkey", str(ak)))
+                        else:
+                            accounts.append(str(ak))
                     
-                    mint = None
-                    creator = None
+                    instructions = message.get("instructions", [])
                     
-                    mint = self._extract_mint_from_logs(logs)
-                    
-                    if not mint:
-                        for ix in message.get("instructions", []):
-                            if isinstance(ix, dict):
-                                data_val = ix.get("data", "")
-                                if data_val:
-                                    try:
-                                        import base64
-                                        decoded = base64.b64decode(data_val)
-                                        if decoded[:8] == bytes.fromhex("507270466d7359"):
-                                            accts = ix.get("accounts", [])
-                                            if len(accts) >= 2:
-                                                mint = accts[0]
-                                                creator = accts[1]
-                                    except:
-                                        pass
-                    
-                    if mint and creator:
-                        return {
-                            "mint": mint,
-                            "creator": creator,
-                            "bonding_curve": None
-                        }
-                    elif mint:
-                        for acc in accounts:
-                            if acc != mint and "System" not in acc and len(acc) > 30:
-                                creator = acc
-                                break
-                        if creator:
-                            return {
-                                "mint": mint,
-                                "creator": creator,
-                                "bonding_curve": None
-                            }
-                                
+                    for ix in instructions:
+                        if isinstance(ix, dict):
+                            program_id_idx = ix.get("programIdIndex", ix.get("programId"))
+                            
+                            if isinstance(program_id_idx, int) and program_id_idx < len(accounts):
+                                program_id = accounts[program_id_idx]
+                            else:
+                                program_id = str(program_id_idx) if program_id_idx else ""
+                            
+                            if "6EF8" in str(program_id):
+                                accts = ix.get("accounts", [])
+                                if isinstance(accts, list) and len(accts) >= 2:
+                                    mint = str(accts[0]) if len(str(accts[0])) >= 32 else None
+                                    creator = str(accts[1]) if len(str(accts[1])) >= 32 else None
+                                    
+                                    if mint and (creator or len(accts) > 1):
+                                        if not creator:
+                                            creator = str(accts[2]) if len(accts) > 2 else signature[:44]
+                                        return {
+                                            "mint": mint,
+                                            "creator": creator,
+                                            "bonding_curve": str(accts[3]) if len(accts) > 3 else None
+                                        }
+                                        
         except Exception as e:
             logger.error(f"Failed to extract tx data: {e}")
+        logger.warning(f"Could not extract mint from tx: {signature[:20]}...")
         return None
         
     def _extract_mint_from_logs(self, logs: list) -> Optional[str]:
@@ -210,15 +200,14 @@ class Scanner:
         return None
         
     async def process_logs(self):
-        msg_count = 0
         last_heartbeat = time.time()
+        last_token_log = time.time()
         while self.running:
             try:
                 msg = await self.ws.receive()
-                msg_count += 1
                 
                 if time.time() - last_heartbeat > 60:
-                    logger.info(f"[SCANNER] Alive - processed {msg_count} messages in last minute")
+                    logger.info(f"[SCANNER] Still alive...")
                     last_heartbeat = time.time()
                 
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -232,24 +221,18 @@ class Scanner:
                                 logs = value_data.get("logs", [])
                                 signature = value_data.get("signature", "")
                                 
-                                if logs and signature:
-                                    has_create = any("Create" in str(l) for l in logs)
-                                    has_mint = any("MintTo" in str(l) for l in logs)
+                                if logs and signature and time.time() - last_token_log > 5:
+                                    create_count = sum(1 for l in logs if "Create" in str(l))
+                                    pump_count = sum(1 for l in logs if "6EF8" in str(l))
                                     
-                                    if has_create:
-                                        mint = self._extract_mint_from_logs(logs)
-                                        if mint:
-                                            logger.info(f"New token: {mint[:20]}...")
-                                            token_info = {
-                                                "mint": mint,
-                                                "creator": signature[:44],
-                                                "bonding_curve": None
-                                            }
+                                    if pump_count > 2 and create_count > 0:
+                                        logger.info(f"Potential new token! pump_logs:{pump_count} create:{create_count}")
+                                        last_token_log = time.time()
+                                        
+                                        token_info = await self._extract_from_transaction(signature, logs)
+                                        if token_info and token_info.get("mint"):
+                                            logger.info(f"Extracted mint: {token_info['mint'][:20]}...")
                                             await self._handle_new_token(token_info)
-                                        else:
-                                            token_info = await self._extract_from_transaction(signature, logs)
-                                            if token_info and token_info.get("mint"):
-                                                await self._handle_new_token(token_info)
                                             
             except asyncio.CancelledError:
                 break
