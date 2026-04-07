@@ -227,13 +227,20 @@ class Scanner:
                                     has_create = any("Create" in str(l) for l in logs)
                                     has_mint = any("MintTo" in str(l) for l in logs)
                                     
-                                    if has_create or has_mint:
-                                        logger.info(f"Token creation detected! Create:{has_create} MintTo:{has_mint}")
-                                        
-                                    token_info = await self._extract_from_transaction(signature, logs)
-                                    if token_info:
-                                        logger.info(f"Extracted mint: {token_info.get('mint', 'N/A')[:20]}...")
-                                        await self._handle_new_token(token_info)
+                                    if has_create:
+                                        mint = self._extract_mint_from_logs(logs)
+                                        if mint:
+                                            logger.info(f"New token: {mint[:20]}...")
+                                            token_info = {
+                                                "mint": mint,
+                                                "creator": signature[:44],
+                                                "bonding_curve": None
+                                            }
+                                            await self._handle_new_token(token_info)
+                                        else:
+                                            token_info = await self._extract_from_transaction(signature, logs)
+                                            if token_info and token_info.get("mint"):
+                                                await self._handle_new_token(token_info)
                                             
             except asyncio.CancelledError:
                 break
