@@ -159,35 +159,40 @@ class Scanner:
     async def process_logs(self):
         log_counter = 0
         raw_counter = 0
+        debug_sample = 0
         while self.running:
             try:
                 msg = await self.ws.receive()
                 raw_counter += 1
                 
-                if raw_counter % 50 == 0:
-                    logger.info(f"[SCANNER] Received {raw_counter} raw messages, {log_counter} processed")
-                
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = msg.json()
+                    debug_sample += 1
+                    
+                    if debug_sample == 1:
+                        logger.info(f"[DEBUG] First message structure: {str(data)[:500]}")
                     
                     if "params" in data and "result" in data["params"]:
                         result_value = data["params"]["result"]
                         if isinstance(result_value, dict):
-                            logs = result_value.get("value", {}).get("logs", [])
-                            signature = result_value.get("signature", "")
+                            result_keys = list(result_value.keys())
+                            logger.info(f"[DEBUG] Result keys: {result_keys}")
                             
-                            if logs and signature:
-                                log_counter += 1
-                                
-                                for log in logs:
-                                    if "Program 6EF8" in log:
-                                        logger.info(f"Pump.fun activity: {log[:100]}")
-                                    elif "Create" in log:
-                                        logger.info(f"Create log: {log[:100]}")
-                                    elif "mint" in log.lower():
-                                        logger.info(f"Mint log: {log[:100]}")
+                            if "value" in result_value:
+                                value_data = result_value["value"]
+                                if isinstance(value_data, dict):
+                                    value_keys = list(value_data.keys())
+                                    logger.info(f"[DEBUG] Value keys: {value_keys}")
+                                    logs = value_data.get("logs", [])
+                                    signature = result_value.get("signature", "")
+                                    
+                                    if logs and signature:
+                                        log_counter += 1
                                         
-                                    if signature:
+                                        for log in logs:
+                                            if "6EF8" in log:
+                                                logger.info(f"Pump.fun: {log[:100]}")
+                                                
                                         token_info = await self._extract_from_transaction(signature)
                                         if token_info:
                                             await self._handle_new_token(token_info)
