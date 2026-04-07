@@ -124,12 +124,12 @@ class Scanner:
                 data = await resp.json()
                 if "result" in data and data["result"]:
                     tx = data["result"]
+                    logs = tx.get("meta", {}).get("logMessages", [])
                     message = tx.get("transaction", {}).get("message", {})
                     
-                    instructions = message.get("instructions", [])
                     accounts = message.get("accountKeys", [])
                     
-                    for ix in instructions:
+                    for ix in message.get("instructions", []):
                         program_id_idx = ix.get("programIdIndex")
                         if program_id_idx is not None and program_id_idx < len(accounts):
                             program_id = accounts[program_id_idx]
@@ -139,8 +139,28 @@ class Scanner:
                                 if parsed:
                                     return parsed
                                     
+                    mint_from_logs = self._extract_mint_from_logs(logs)
+                    if mint_from_logs:
+                        for acc in accounts:
+                            if acc != mint_from_logs:
+                                return {
+                                    "mint": mint_from_logs,
+                                    "creator": acc,
+                                    "bonding_curve": None
+                                }
+                                
         except Exception as e:
             logger.error(f"Failed to extract tx data: {e}")
+        return None
+        
+    def _extract_mint_from_logs(self, logs: list) -> Optional[str]:
+        for log in logs:
+            if isinstance(log, str):
+                if "mint:" in log.lower() or "new mint" in log.lower():
+                    parts = log.split()
+                    for i, part in enumerate(parts):
+                        if len(part) == 44 and part.isalnum():
+                            return part
         return None
         
     async def _parse_ix_data(self, ix: Dict, account_keys: list) -> Optional[Dict[str, Any]]:
@@ -182,10 +202,12 @@ class Scanner:
                                 
                                 if logs and signature:
                                     for log in logs:
+                                        if "Create" in log or "initialize" in log.lower() or "mint" in log.lower():
+                                            logger.info(f"Token create: {log[:100]}")
+                                            
+                                    for log in logs:
                                         if "6EF8" in log:
                                             logger.info(f"Pump.fun: {log[:80]}")
-                                        elif "Create" in log and "mint" in log.lower():
-                                            logger.info(f"Potential token create: {log[:80]}")
                                             
                                     token_info = await self._extract_from_transaction(signature)
                                     if token_info:
