@@ -109,7 +109,7 @@ class Scanner:
         ]
         return str(Pubkey.__new__(Pubkey, seeds[1]))
         
-    async def _extract_from_transaction(self, signature: str) -> Optional[Dict[str, Any]]:
+    async def _extract_from_transaction(self, signature: str, logs_hint: list = None) -> Optional[Dict[str, Any]]:
         try:
             url = f"{config.RPC_URL}?api-key={config.HELIUS_API_KEY}"
             async with self.session.post(url, json={
@@ -118,49 +118,72 @@ class Scanner:
                 "method": "getTransaction",
                 "params": [
                     signature,
-                    {"encoding": "jsonParsed"}
+                    {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}
                 ]
             }) as resp:
                 data = await resp.json()
                 if "result" in data and data["result"]:
                     tx = data["result"]
-                    logs = tx.get("meta", {}).get("logMessages", [])
+                    meta = tx.get("meta", {})
+                    logs = meta.get("logMessages", []) or logs_hint or []
                     message = tx.get("transaction", {}).get("message", {})
                     
                     accounts = message.get("accountKeys", [])
+                    if not accounts:
+                        accounts = tx.get("transaction", {}).get("message", {}).get("accountKeys", [])
                     
-                    for ix in message.get("instructions", []):
-                        program_id_idx = ix.get("programIdIndex")
-                        if program_id_idx is not None and program_id_idx < len(accounts):
-                            program_id = accounts[program_id_idx]
-                            
-                            if "6EF8" in str(program_id):
-                                parsed = await self._parse_ix_data(ix, accounts)
-                                if parsed:
-                                    return parsed
-                                    
-                    mint_from_logs = self._extract_mint_from_logs(logs)
-                    if mint_from_logs:
+                    mint = None
+                    creator = None
+                    
+                    mint = self._extract_mint_from_logs(logs)
+                    
+                    if not mint:
+                        for ix in message.get("instructions", []):
+                            if isinstance(ix, dict):
+                                data_val = ix.get("data", "")
+                                if data_val:
+                                    try:
+                                        import base64
+                                        decoded = base64.b64decode(data_val)
+                                        if decoded[:8] == bytes.fromhex("507270466d7359"):
+                                            accts = ix.get("accounts", [])
+                                            if len(accts) >= 2:
+                                                mint = accts[0]
+                                                creator = accts[1]
+                                    except:
+                                        pass
+                    
+                    if mint and creator:
+                        return {
+                            "mint": mint,
+                            "creator": creator,
+                            "bonding_curve": None
+                        }
+                    elif mint:
                         for acc in accounts:
-                            if acc != mint_from_logs:
-                                return {
-                                    "mint": mint_from_logs,
-                                    "creator": acc,
-                                    "bonding_curve": None
-                                }
+                            if acc != mint and "System" not in acc and len(acc) > 30:
+                                creator = acc
+                                break
+                        if creator:
+                            return {
+                                "mint": mint,
+                                "creator": creator,
+                                "bonding_curve": None
+                            }
                                 
         except Exception as e:
             logger.error(f"Failed to extract tx data: {e}")
         return None
         
     def _extract_mint_from_logs(self, logs: list) -> Optional[str]:
+        import re
         for log in logs:
             if isinstance(log, str):
-                if "mint:" in log.lower() or "new mint" in log.lower():
-                    parts = log.split()
-                    for i, part in enumerate(parts):
-                        if len(part) == 44 and part.isalnum():
-                            return part
+                if "MintTo" in log or "mint" in log.lower():
+                    addrs = re.findall(r'[1-9A-HJ-NP-Za-km-z]{32,44}', log)
+                    for addr in addrs:
+                        if len(addr) >= 32:
+                            return addr
         return None
         
     async def _parse_ix_data(self, ix: Dict, account_keys: list) -> Optional[Dict[str, Any]]:
@@ -201,16 +224,15 @@ class Scanner:
                                 signature = value_data.get("signature", "")
                                 
                                 if logs and signature:
-                                    for log in logs:
-                                        if "Create" in log or "initialize" in log.lower() or "mint" in log.lower():
-                                            logger.info(f"Token create: {log[:100]}")
-                                            
-                                    for log in logs:
-                                        if "6EF8" in log:
-                                            logger.info(f"Pump.fun: {log[:80]}")
-                                            
-                                    token_info = await self._extract_from_transaction(signature)
+                                    has_create = any("Create" in str(l) for l in logs)
+                                    has_mint = any("MintTo" in str(l) for l in logs)
+                                    
+                                    if has_create or has_mint:
+                                        logger.info(f"Token creation detected! Create:{has_create} MintTo:{has_mint}")
+                                        
+                                    token_info = await self._extract_from_transaction(signature, logs)
                                     if token_info:
+                                        logger.info(f"Extracted mint: {token_info.get('mint', 'N/A')[:20]}...")
                                         await self._handle_new_token(token_info)
                                             
             except asyncio.CancelledError:
