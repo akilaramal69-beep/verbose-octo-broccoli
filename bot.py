@@ -16,7 +16,7 @@ from config import config
 logger = logging.getLogger(__name__)
 
 class TelegramBot:
-    def __init__(self):
+    def __init__(self, trade_executor=None):
         self.token = config.TELEGRAM_BOT_TOKEN
         self.chat_id = config.TELEGRAM_CHAT_ID
         self.base_url = f"https://api.telegram.org/bot{self.token}"
@@ -24,12 +24,19 @@ class TelegramBot:
         self.update_offset = 0
         self.running = False
         self.handlers: Dict[str, Callable] = {}
+        self.trade = trade_executor
+        self.simulation_mode = config.SIMULATION_MODE
+        self.simulated_balance = config.SIMULATION_BALANCE_SOL
+        self.simulated_trades = []
         self.stats = {
             "total_trades": 0,
             "successful_trades": 0,
             "failed_trades": 0,
             "total_profit_sol": 0.0,
-            "active_positions": 0
+            "active_positions": 0,
+            "simulated_wins": 0,
+            "simulated_losses": 0,
+            "simulated_pnl": 0.0
         }
         
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -89,30 +96,67 @@ class TelegramBot:
         await self.send_message(message)
         
     async def handle_start_command(self) -> str:
-        balance = await self._get_wallet_balance()
+        if self.simulation_mode:
+            balance = self.simulated_balance
+            mode_indicator = "🎮 SIMULATION"
+            win_rate = self._calculate_sim_win_rate()
+        else:
+            balance = await self._get_wallet_balance()
+            mode_indicator = "💰 LIVE"
+            win_rate = self._calculate_win_rate()
+        
         active = self.stats["active_positions"]
         
         return (
-            "🤖 *PUMP.FUN SNIPER BOT*\n\n"
+            f"🤖 *PUMP.FUN SNIPER BOT* {mode_indicator}\n\n"
             f"💧 SOL Balance: {balance:.4f}\n"
             f"📊 Active Trades: {active}\n"
-            f"✅ Total Trades: {self.stats['successful_trades']}\n"
-            f"❌ Failed: {self.stats['failed_trades']}\n"
+            f"✅ Total Trades: {self.stats['total_trades']}\n"
+            f"📈 Win Rate: {win_rate:.0f}%\n"
             f"💰 Total Profit: {self.stats['total_profit_sol']:.4f} SOL\n\n"
             "Commands:\n"
             "/start - Show stats\n"
             "/status - Bot status\n"
+            "/simulate - Toggle simulation mode\n"
             "/trades - Trade history"
         )
         
     async def handle_status_command(self) -> str:
         status = "🟢 ONLINE" if self.running else "🔴 OFFLINE"
+        mode = "🎮 SIMULATION" if self.simulation_mode else "💰 LIVE"
         
         return (
             f"*Bot Status:* {status}\n"
+            f"*Mode:* {mode}\n"
             f"*WebSocket:* {'Connected' if self.running else 'Disconnected'}\n"
             f"*Scanner:* {'Active' if self.running else 'Inactive'}"
         )
+        
+    async def handle_simulate_command(self) -> str:
+        self.simulation_mode = not self.simulation_mode
+        
+        if self.trade:
+            self.trade.toggle_simulation(self.simulation_mode)
+        
+        if self.simulation_mode:
+            self.simulated_balance = config.SIMULATION_BALANCE_SOL
+            self.simulated_trades = []
+            self.stats['simulated_wins'] = 0
+            self.stats['simulated_losses'] = 0
+            self.stats['simulated_pnl'] = 0.0
+            
+            return (
+                "🎮 *SIMULATION MODE ENABLED*\n\n"
+                f"Simulated Balance: {self.simulated_balance:.4f} SOL\n\n"
+                "All trades will be simulated using real market data.\n"
+                "Use /simulate again to disable."
+            )
+        else:
+            return (
+                "💰 *SIMULATION MODE DISABLED*\n\n"
+                "Bot is now in LIVE trading mode.\n"
+                "Real trades will be executed."
+            )
         
     async def handle_trades_command(self) -> str:
         trades_text = []
@@ -128,6 +172,12 @@ class TelegramBot:
         if total == 0:
             return 0
         return (self.stats['successful_trades'] / total) * 100
+    
+    def _calculate_sim_win_rate(self) -> float:
+        total = self.stats['simulated_wins'] + self.stats['simulated_losses']
+        if total == 0:
+            return 0
+        return (self.stats['simulated_wins'] / total) * 100
         
     async def _get_wallet_balance(self) -> float:
         try:
@@ -198,6 +248,8 @@ class TelegramBot:
             response = await self.handle_status_command()
         elif command == "/trades":
             response = await self.handle_trades_command()
+        elif command == "/simulate":
+            response = await self.handle_simulate_command()
             
         if response:
             await self.send_message(response)

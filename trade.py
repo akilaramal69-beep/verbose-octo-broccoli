@@ -49,6 +49,9 @@ class TradeExecutor:
         self.positions: Dict[str, TradePosition] = {}
         self.current_fees: float = config.MIN_PRIORITY_FEE
         self.last_fee_update: float = 0
+        self.simulation_mode = False
+        self.simulated_balance = config.SIMULATION_BALANCE_SOL
+        self.simulated_positions: Dict[str, dict] = {}
         
     async def _get_session(self) -> aiohttp.ClientSession:
         if not self.session or self.session.closed:
@@ -92,6 +95,9 @@ class TradeExecutor:
     ) -> Optional[TradePosition]:
         if amount_sol is None:
             amount_sol = config.TRADE_AMOUNT_SOL
+            
+        if self.simulation_mode:
+            return await self._simulate_buy(mint, amount_sol)
             
         await self._update_dynamic_fees()
         
@@ -352,6 +358,8 @@ class TradeExecutor:
             await asyncio.sleep(2)
             
     async def get_sol_balance(self) -> float:
+        if self.simulation_mode:
+            return self.simulated_balance
         try:
             session = await self._get_session()
             url = f"{config.RPC_URL}?api-key={config.HELIUS_API_KEY}"
@@ -369,6 +377,118 @@ class TradeExecutor:
             logger.error(f"Balance check failed: {e}")
         return 0.0
         
+    async def _simulate_buy(self, mint: str, amount_sol: float) -> Optional[TradePosition]:
+        if self.simulated_balance < amount_sol:
+            logger.warning(f"[SIM] Insufficient balance: {self.simulated_balance:.4f} SOL")
+            return None
+            
+        self.simulated_balance -= amount_sol
+        
+        entry_price = await self._get_token_price(mint)
+        if entry_price == 0:
+            entry_price = 0.000001
+            
+        tokens_bought = amount_sol / entry_price
+        
+        position = TradePosition(
+            mint=mint,
+            entry_price=entry_price,
+            amount_sol=amount_sol,
+            amount_tokens=tokens_bought,
+            status=TradeStatus.BOUGHT,
+            signature=f"[SIM]{mint[:8]}"
+        )
+        
+        self.positions[mint] = position
+        self.simulated_positions[mint] = {
+            "entry_price": entry_price,
+            "amount_sol": amount_sol,
+            "tokens": tokens_bought,
+            "sold_portion_1": False,
+            "trailing_high": entry_price,
+            "entry_time": time.time()
+        }
+        
+        logger.info(f"[SIM] BUY executed: {mint[:8]}... @ {entry_price:.9f} | {tokens_bought:.0f} tokens")
+        
+        return position
+        
+    async def _simulate_sell(self, mint: str, percentage: float = 1.0) -> bool:
+        if mint not in self.simulated_positions:
+            return False
+            
+        sim_pos = self.simulated_positions[mint]
+        amount_tokens = sim_pos["tokens"] * percentage
+        
+        current_price = await self._get_token_price(mint)
+        if current_price == 0:
+            current_price = sim_pos["entry_price"]
+            
+        sol_received = amount_tokens * current_price
+        
+        if percentage >= 1.0:
+            del self.simulated_positions[mint]
+        else:
+            sim_pos["tokens"] -= amount_tokens
+            
+        self.simulated_balance += sol_received
+        
+        pnl_pct = ((sol_received - sim_pos["amount_sol"]) / sim_pos["amount_sol"]) * 100
+        logger.info(f"[SIM] SELL executed: {mint[:8]}... @ {current_price:.9f} | PnL: {pnl_pct:+.1f}%")
+        
+        return True
+        
+    async def monitor_and_exit_sim(self, mint: str, bot_callback=None):
+        if mint not in self.simulated_positions:
+            return
+            
+        sim_pos = self.simulated_positions[mint]
+        
+        while mint in self.simulated_positions:
+            try:
+                current_price = await self._get_token_price(mint)
+                if current_price == 0:
+                    current_price = sim_pos["entry_price"]
+                    
+                if current_price > sim_pos["trailing_high"]:
+                    sim_pos["trailing_high"] = current_price
+                    
+                pnl_pct = ((current_price - sim_pos["entry_price"]) / sim_pos["entry_price"]) * 100
+                
+                if not sim_pos["sold_portion_1"] and pnl_pct >= config.PROFIT_TARGET_1 * 100:
+                    await self._simulate_sell(mint, config.SELL_PORTION_1)
+                    sim_pos["sold_portion_1"] = True
+                    sim_pos["tokens"] = sim_pos["tokens"] / (1 - config.SELL_PORTION_1)
+                    
+                    if bot_callback:
+                        await bot_callback(
+                            f"🎮 [SIM] PARTIAL PROFIT: +{config.PROFIT_TARGET_1*100:.0f}% | Sold {config.SELL_PORTION_1*100:.0f}%"
+                        )
+                        
+                trailing_stop = sim_pos["trailing_high"] * (1 + config.TRAILING_STOP_LOSS)
+                if sim_pos["sold_portion_1"] and current_price <= trailing_stop:
+                    await self._simulate_sell(mint, 1.0)
+                    
+                    if mint not in self.simulated_positions:
+                        if bot_callback:
+                            await bot_callback(
+                                f"🎮 [SIM] EXIT COMPLETE: {pnl_pct:+.1f}% | Balance: {self.simulated_balance:.4f} SOL"
+                            )
+                            
+            except Exception as e:
+                logger.error(f"[SIM] Monitor error: {e}")
+                
+            await asyncio.sleep(2)
+            
+    def toggle_simulation(self, enabled: bool):
+        self.simulation_mode = enabled
+        if enabled:
+            self.simulated_balance = config.SIMULATION_BALANCE_SOL
+            self.simulated_positions = {}
+            logger.info(f"[SIM] Simulation mode ENABLED | Balance: {self.simulated_balance:.4f} SOL")
+        else:
+            logger.info(f"[SIM] Simulation mode DISABLED | Final PnL: {self.simulated_balance - config.SIMULATION_BALANCE_SOL:.4f} SOL")
+            
     async def close(self):
         if self.session:
             await self.session.close()

@@ -37,6 +37,9 @@ class Config:
     PUMP_FUN_PROGRAM: str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
     PUMP_FUN_CREATE_PREFIX: bytes = bytes.fromhex("507270466d7359")
     
+    SIMULATION_BALANCE_SOL: float = 0.15
+    SIMULATION_MODE: bool = False
+    
     JITO_ENDPOINTS: list = field(default_factory=lambda: [
         "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles",
         "https://mainnet.block-engine.jito.wtf/api/v1/bundles"

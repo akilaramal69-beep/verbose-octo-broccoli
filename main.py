@@ -30,20 +30,27 @@ class SniperBot:
         self.algo = AlgoScorer()
         self.trade = TradeExecutor(self.wallet)
         self.scanner = Scanner(self.algo)
-        self.telegram = TelegramBot()
+        self.telegram = TelegramBot(self.trade)
         self.running = False
         
+        self.trade.simulation_mode = config.SIMULATION_MODE
+        self.trade.simulated_balance = config.SIMULATION_BALANCE_SOL
+        self.telegram.simulation_mode = config.SIMULATION_MODE
+        
     async def start(self):
+        mode = "🎮 SIMULATION" if self.trade.simulation_mode else "💰 LIVE"
         logger.info("=" * 50)
-        logger.info("PUMP.FUN SNIPER BOT STARTING")
+        logger.info(f"PUMP.FUN SNIPER BOT STARTING - {mode}")
         logger.info(f"Wallet: {self.wallet.address[:8]}...{self.wallet.address[-4:]}")
         logger.info(f"Trade Amount: {config.TRADE_AMOUNT_SOL} SOL")
         logger.info("=" * 50)
         
         self.running = True
         
+        mode_text = "🎮 SIMULATION MODE" if self.trade.simulation_mode else "💰 LIVE MODE"
         await self.telegram.send_alert(
-            "🤖 *Bot Started*\n"
+            f"🤖 *Bot Started*\n"
+            f"Mode: {mode_text}\n"
             f"Wallet: {self.wallet.address[:8]}...\n"
             f"Trade Size: {config.TRADE_AMOUNT_SOL} SOL"
         )
@@ -78,18 +85,20 @@ class SniperBot:
                 logger.info(f"Status: {balance:.4f} SOL | {len(self.trade.positions)} positions")
                 
     async def handle_token(self, pump_token):
+        mode = "[SIM]" if self.trade.simulation_mode else ""
         logger.info(
-            f"Token Scored: {pump_token.mint[:8]}... "
+            f"{mode} Token Scored: {pump_token.mint[:8]}... "
             f"Score: {pump_token.score}/100 "
             f"Dev: {pump_token.dev_holding_pct:.1f}%"
         )
         
         if pump_token.score > 0:
+            status = "SIM BUYING..." if self.trade.simulation_mode else "BUYING..."
             await self.telegram.handle_new_token(
                 pump_token.mint,
                 pump_token.score,
                 pump_token.dev_holding_pct,
-                "BUYING..."
+                status
             )
             
             position = await self.trade.execute_buy(
@@ -103,12 +112,20 @@ class SniperBot:
                     active_positions=len(self.trade.positions)
                 )
                 
-                asyncio.create_task(
-                    self.trade.monitor_and_exit(
-                        pump_token.mint,
-                        self.telegram.handle_profit_taken
+                if self.trade.simulation_mode:
+                    asyncio.create_task(
+                        self.trade.monitor_and_exit_sim(
+                            pump_token.mint,
+                            self.telegram.handle_profit_taken
+                        )
                     )
-                )
+                else:
+                    asyncio.create_task(
+                        self.trade.monitor_and_exit(
+                            pump_token.mint,
+                            self.telegram.handle_profit_taken
+                        )
+                    )
             else:
                 await self.telegram.handle_trade_failed(
                     pump_token.mint,
@@ -118,7 +135,7 @@ class SniperBot:
                     failed_trades=self.telegram.stats['failed_trades'] + 1
                 )
         else:
-            logger.info(f"Token rejected: {pump_token.mint[:8]}... - {pump_token.risk_factors}")
+            logger.info(f"{mode} Token rejected: {pump_token.mint[:8]}... - {pump_token.risk_factors}")
             
     async def stop(self):
         logger.info("Shutting down...")
