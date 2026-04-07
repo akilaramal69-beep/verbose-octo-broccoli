@@ -443,6 +443,7 @@ class TradeExecutor:
             return
             
         sim_pos = self.simulated_positions[mint]
+        logger.info(f"[SIM] Started monitoring {mint[:20]}... Entry: {sim_pos['entry_price']:.9f}")
         
         while mint in self.simulated_positions:
             try:
@@ -453,20 +454,24 @@ class TradeExecutor:
                 if current_price > sim_pos["trailing_high"]:
                     sim_pos["trailing_high"] = current_price
                     
-                pnl_pct = ((current_price - sim_pos["entry_price"]) / sim_pos["entry_price"]) * 100
+                pnl_pct = ((current_price - sim_pos["entry_price"]) / sim_pos["entry_price"]) * 100 if sim_pos["entry_price"] > 0 else 0
+                
+                logger.info(f"[SIM] Monitor {mint[:20]}: Price={current_price:.9f} PnL={pnl_pct:+.1f}% Target={config.PROFIT_TARGET_1*100:.0f}%")
                 
                 if not sim_pos["sold_portion_1"] and pnl_pct >= config.PROFIT_TARGET_1 * 100:
+                    logger.info(f"[SIM] Taking partial profit at {pnl_pct:.1f}%")
                     await self._simulate_sell(mint, config.SELL_PORTION_1)
                     sim_pos["sold_portion_1"] = True
                     sim_pos["tokens"] = sim_pos["tokens"] / (1 - config.SELL_PORTION_1)
                     
                     if bot_callback:
                         await bot_callback(
-                            f"🎮 [SIM] PARTIAL PROFIT: +{config.PROFIT_TARGET_1*100:.0f}% | Sold {config.SELL_PORTION_1*100:.0f}%"
+                            f"🎮 [SIM] PARTIAL PROFIT: +{pnl_pct:.0f}% | Sold {config.SELL_PORTION_1*100:.0f}%"
                         )
                         
                 trailing_stop = sim_pos["trailing_high"] * (1 + config.TRAILING_STOP_LOSS)
                 if sim_pos["sold_portion_1"] and current_price <= trailing_stop:
+                    logger.info(f"[SIM] Trailing stop hit: {current_price:.9f} <= {trailing_stop:.9f}")
                     await self._simulate_sell(mint, 1.0)
                     
                     if mint not in self.simulated_positions:
@@ -478,7 +483,7 @@ class TradeExecutor:
             except Exception as e:
                 logger.error(f"[SIM] Monitor error: {e}")
                 
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
             
     def toggle_simulation(self, enabled: bool):
         self.simulation_mode = enabled
